@@ -11,6 +11,7 @@ import datetime
 import nltk
 import numpy as np
 
+
 INSPECTION_THRESHOLD = 365*5 # days, inspections before this age probably indicate a closed/outdated airport
 
 class Airport:
@@ -19,8 +20,8 @@ class Airport:
                  name='',
                  lat=0,
                  lon=0,
-                 lat_dms=['',0,0,0],
-                 lon_dms=['',0,0,0],
+                 lat_dms=[],
+                 lon_dms=[],
                  lat_dms_string='',
                  lon_dms_string='',
                  city='',
@@ -34,6 +35,10 @@ class Airport:
         self.name = name.upper()
         self.lat = lat
         self.lon = lon
+        if (lat or lon) and not lat_dms:
+            lat_dms, lon_dms = ll_decimal_to_dms(lat,lon)
+        if (lat_dms and lon_dms) and not lat_dms_string:
+            lat_dms_string, lon_dms_string = ll_dms_to_string(lat_dms, lon_dms)
         self.lat_dms = lat_dms
         self.lon_dms = lon_dms
         self.lat_dms_string = lat_dms_string
@@ -46,6 +51,57 @@ class Airport:
         self.status = status
         self.source = source
 
+def get_dms(decimal_degrees):
+    decimal_degrees = abs(decimal_degrees)
+    degrees = np.floor(decimal_degrees)
+    remainder = decimal_degrees - degrees
+    minutes = np.floor(remainder*60.0)
+    remainder = remainder - (minutes/60.0)
+    seconds = round(remainder*60.0*60.0, 4)
+    return degrees, minutes, seconds
+
+def ll_decimal_to_dms(lat,lon):
+    '''
+    Convert decimal latitude/longitude to degrees minutes seconds
+    '''
+    if lat < 0:
+        lat_hemisphere = 'S'
+    else:
+        lat_hemisphere = 'N'
+    lat_deg, lat_min, lat_sec = get_dms(lat)
+
+    if lon < 0:
+        lon_hemisphere = 'W'
+    else:
+        lon_hemisphere = 'E'
+
+    lon_deg, lon_min, lon_sec = get_dms(lon)
+
+    lat_dms = [lat_hemisphere, lat_deg, lat_min, lat_sec]
+    lon_dms = [lon_hemisphere, lon_deg, lon_min, lon_sec]
+
+    return lat_dms, lon_dms
+
+def ll_dms_to_decimal(lat_dms,lon_dms):
+    '''
+    Convert degrees minutes seconds to decimal latitude/longitude
+    '''
+    return lat,lon
+
+def ll_dms_to_string(lat_dms, lon_dms):
+    '''
+
+    '''
+    lat_dms_string = ''.join([lat_dms[0],
+                              str(int(lat_dms[1])).zfill(2),
+                              str(int(lat_dms[2])).zfill(2),
+                              str(int(lat_dms[3])).zfill(2)])
+
+    lon_dms_string = ''.join([lon_dms[0],
+                              str(int(lon_dms[1])).zfill(3),
+                              str(int(lon_dms[2])).zfill(2),
+                              str(int(lon_dms[3])).zfill(2)])
+    return lat_dms_string, lon_dms_string
 
 def haversine_np(lon1, lat1, lon2, lat2):
     """
@@ -86,6 +142,41 @@ def airports_to_df(airports):
     return airport_df
 
 
+def get_usgs_airport_list(flat_file):
+    airport_df = get_usgs_airport_df(flat_file)
+    airports = []
+    for index, row in airport_df.iterrows():
+        # if pd.isna(row['LAT_DEGREES']):
+        #     print('Skipping unknown airport:')
+        #     print(row)
+        #     continue
+
+        airport = Airport(id=row['FAA_AIRPOR'],
+                          name=row['NAME'],
+                          lat=row['Y'],
+                          lon=row['X'],
+                          source='usgs'
+                          )
+        airports.append(airport)
+    return airports
+
+def get_usgs_airport_df(flat_file):
+    """Read USGS AirportPoint list and return airport details
+
+    Prepped this data by opening the shapefile in QGIS, saving to a csv with GEOMETRY=AS_XY
+
+    Source data:
+    https://prd-tnm.s3.amazonaws.com/index.html?prefix=StagedProducts/Tran/Shape/
+    """
+    # TODO: Download an updated file from https://www.transtats.bts.gov/DL_SelectFields.asp?Table_ID=288&DB_Short_Name=Aviation%20Support%20Tables
+    # TODO: Allow closed or open runways to be returned
+
+    with open(flat_file, 'r') as csvfile:
+        file_contents = StringIO(csvfile.read())
+        df = pd.read_csv(file_contents)
+        us_airports = df.loc[(df.GEODB_SUB != 'Runway')]
+        return us_airports
+
 def get_bts_airport_list(archive):
     airport_df = get_bts_airport_df(archive)
     airports = []
@@ -99,19 +190,11 @@ def get_bts_airport_list(archive):
                    row['LAT_DEGREES'],
                    row['LAT_MINUTES'],
                    row['LAT_SECONDS']]
-        lat_dms_string = ''.join([lat_dms[0],
-                                  str(int(lat_dms[1])).zfill(2),
-                                  str(int(lat_dms[2])).zfill(2),
-                                  str(int(lat_dms[3])).zfill(2)])
 
         lon_dms = [row['LON_HEMISPHERE'],
                    row['LON_DEGREES'],
                    row['LON_MINUTES'],
                    row['LON_SECONDS']]
-        lon_dms_string = ''.join([lon_dms[0],
-                                  str(int(lon_dms[1])).zfill(3),
-                                  str(int(lon_dms[2])).zfill(2),
-                                  str(int(lon_dms[3])).zfill(2)])
 
         status = 'O'
         if row['AIRPORT_IS_CLOSED'] == 1:
@@ -129,8 +212,6 @@ def get_bts_airport_list(archive):
                           lon=row['LONGITUDE'],
                           lat_dms=lat_dms,
                           lon_dms=lon_dms,
-                          lat_dms_string=lat_dms_string,
-                          lon_dms_string=lon_dms_string,
                           city=row['DISPLAY_AIRPORT_CITY_NAME_FULL'],
                           state=row['AIRPORT_STATE_CODE'],
                           icao='',
@@ -177,15 +258,6 @@ def get_bts_airport_df(archive):
                                    ]]
         return us_airports
 
-def get_usgs_airport_df(archive):
-    '''
-    Parse USGS airport locations
-
-    source data:
-    https://prd-tnm.s3.amazonaws.com/index.html?prefix=StagedProducts/Tran/National/GDB/
-    '''
-
-
 def get_ourairports_airports_df(archive):
     '''
     Parse ourairports airport locations
@@ -226,10 +298,6 @@ def get_nfdc_airport_list(archive):
         lat = float(lat[0:-1])/3600.0
         if lat_dms[0] == 'S':
             lat = lat*(-1)
-        lat_dms_string = ''.join([lat_dms[0],
-                                  str(int(lat_dms[1])).zfill(2),
-                                  str(int(lat_dms[2])).zfill(2),
-                                  str(int(lat_dms[3])).zfill(2)])
 
         lon_formatted = row['AIRPORT REFERENCE POINT LONGITUDE (FORMATTED)']
 
@@ -241,10 +309,6 @@ def get_nfdc_airport_list(archive):
         lon = float(lon[0:-1])/3600.0
         if lon_dms[0] == 'W':
             lon = lon*(-1)
-        lon_dms_string = ''.join([lon_dms[0],
-                                  str(int(lon_dms[1])).zfill(3),
-                                  str(int(lon_dms[2])).zfill(2),
-                                  str(int(lon_dms[3])).zfill(2)])
 
         status = row['AIRPORT STATUS CODE']
 
@@ -266,8 +330,6 @@ def get_nfdc_airport_list(archive):
                           lon=lon,
                           lat_dms=lat_dms,
                           lon_dms=lon_dms,
-                          lat_dms_string=lat_dms_string,
-                          lon_dms_string=lon_dms_string,
                           city=row['ASSOCIATED CITY NAME'],
                           state=row['ASSOCIATED STATE POST OFFICE CODE'],
                           icao=row['ICAO IDENTIFIER'],
@@ -526,6 +588,13 @@ def get_nfdc_airport_df(archive):
     return us_airports
 
 if __name__ == '__main__':
+
+    lat_dms, lon_dms = ll_decimal_to_dms(22.125, -22.125)
+    assert(lat_dms == ['N', 22.0, 7.0, 30.0])
+    assert(lon_dms == ['W', 22.0, 7.0, 30.0])
+
+    usgs_airports = get_usgs_airport_list(r'usgs\usgs_tran_national_AirportPoint.csv')
+    usgs_airport_df = airports_to_df(usgs_airports)
     bts_airports = get_bts_airport_list(r'bts\787626600_T_MASTER_CORD.zip')
     nfdc_airports = get_nfdc_airport_list(r'nfdc\APT.zip')
     bts_airport_df = airports_to_df(bts_airports)
