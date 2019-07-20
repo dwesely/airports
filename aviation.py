@@ -32,7 +32,8 @@ class Airport:
                  end_date='',
                  type='',
                  status='',
-                 source=''):
+                 source='',
+                 link=''):
         self.id = id
         self.name = name.upper()
         self.lat = lat
@@ -54,6 +55,7 @@ class Airport:
         self.type = type
         self.status = status
         self.source = source
+        self.link = link
 
 def get_dms(decimal_degrees):
     decimal_degrees = abs(decimal_degrees)
@@ -281,7 +283,8 @@ def get_ourairports_airports_list(flat_file):
                           iata=row['iata_code'],
                           status=status,
                           type=row['type'],
-                          source='ourairports'
+                          source='ourairports',
+                          link=row['link']
                           )
         airports.append(airport)
     return airports
@@ -300,20 +303,53 @@ def get_ourairports_airports_df(flat_file):
         df = pd.read_csv(file_contents)
         us_airports = df.loc[(df.iso_country == 'US')]
         us_airports[['iata_code','local_code','municipality']] = us_airports[['iata_code','local_code','municipality']].fillna('')
+        merged_links = us_airports.wikipedia_link.fillna(us_airports.home_link).fillna('')
+        us_airports['link'] = merged_links
         return us_airports
 
 
-def get_abandoned_airports_list(archive):
-    return
+def get_abandoned_airports_list(flat_file):
+    airport_df = get_abandoned_airports_df(flat_file)
+    airports = []
+    for index, row in airport_df.iterrows():
+        # if pd.isna(row['LAT_DEGREES']):
+        #     print('Skipping unknown airport:')
+        #     print(row)
+        #     continue
 
-def get_abandoned_airports_df(archive):
+        airport_parts = row['Airport'].split(',')
+        state = row['State']
+        name = ','.join(airport_parts[:-2])
+        city = airport_parts[-2]
+        if len(airport_parts) < 3:
+            # Malformed (city, state), just split it up into two parts
+            name = airport_parts[0]
+            city = airport_parts[-1]
+
+        airport = Airport(name=name,
+                          lat=row['Lat'],
+                          lon=row['Lon'],
+                          city=city,
+                          state=row['State'],
+                          status='C',
+                          source='abandoned_airfields',
+                          link=row['Link']
+                          )
+        airports.append(airport)
+    return airports
+
+def get_abandoned_airports_df(flat_file):
     '''
     Parse abandoned airfields airport locations
 
     source data:
     http://www.airfields-freeman.com/
     '''
-    return
+
+    with open(flat_file, 'r') as csvfile:
+        file_contents = StringIO(csvfile.read())
+        df = pd.read_csv(file_contents)
+        return df
 
 def get_nfdc_airport_list(archive):
     airport_df = get_nfdc_airport_df(archive)
