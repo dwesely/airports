@@ -10,7 +10,7 @@ from io import StringIO
 import datetime
 import nltk
 import numpy as np
-
+import os
 
 INSPECTION_THRESHOLD = 365*5 # days, inspections before this age probably indicate a closed/outdated airport
 
@@ -27,8 +27,10 @@ class Airport:
                  city='',
                  state='',
                  icao='',
+                 iata='',
                  start_date='',
                  end_date='',
+                 type='',
                  status='',
                  source=''):
         self.id = id
@@ -46,8 +48,10 @@ class Airport:
         self.city = city.split(',')[0].upper()
         self.state = state
         self.icao = icao
+        self.iata = iata
         self.start_date = start_date
         self.end_date = end_date
+        self.type = type
         self.status = status
         self.source = source
 
@@ -146,11 +150,6 @@ def get_usgs_airport_list(flat_file):
     airport_df = get_usgs_airport_df(flat_file)
     airports = []
     for index, row in airport_df.iterrows():
-        # if pd.isna(row['LAT_DEGREES']):
-        #     print('Skipping unknown airport:')
-        #     print(row)
-        #     continue
-
         airport = Airport(id=row['FAA_AIRPOR'],
                           name=row['NAME'],
                           lat=row['Y'],
@@ -258,14 +257,54 @@ def get_bts_airport_df(archive):
                                    ]]
         return us_airports
 
-def get_ourairports_airports_df(archive):
+
+def get_ourairports_airports_list(flat_file):
+    airport_df = get_ourairports_airports_df(flat_file)
+    airports = []
+    for index, row in airport_df.iterrows():
+        # if pd.isna(row['LAT_DEGREES']):
+        #     print('Skipping unknown airport:')
+        #     print(row)
+        #     continue
+
+        status = 'O'
+        if row['type'] == 'closed':
+            status = 'C'
+
+        airport = Airport(id=row['local_code'],
+                          name=row['name'],
+                          lat=row['latitude_deg'],
+                          lon=row['longitude_deg'],
+                          city=row['municipality'],
+                          state=row['iso_region'][-2:],
+                          icao=row['ident'],
+                          iata=row['iata_code'],
+                          status=status,
+                          type=row['type'],
+                          source='ourairports'
+                          )
+        airports.append(airport)
+    return airports
+
+def get_ourairports_airports_df(flat_file):
     '''
     Parse ourairports airport locations
 
     source data:
     http://ourairports.com/data/
     '''
+    # airport_file = os.path.join(folder,'airports.csv')
 
+    with open(flat_file, 'rb') as csvfile:
+        file_contents = StringIO(csvfile.read().decode('utf-8'))
+        df = pd.read_csv(file_contents)
+        us_airports = df.loc[(df.iso_country == 'US')]
+        us_airports[['iata_code','local_code','municipality']] = us_airports[['iata_code','local_code','municipality']].fillna('')
+        return us_airports
+
+
+def get_abandoned_airports_list(archive):
+    return
 
 def get_abandoned_airports_df(archive):
     '''
@@ -274,6 +313,7 @@ def get_abandoned_airports_df(archive):
     source data:
     http://www.airfields-freeman.com/
     '''
+    return
 
 def get_nfdc_airport_list(archive):
     airport_df = get_nfdc_airport_df(archive)
@@ -335,6 +375,7 @@ def get_nfdc_airport_list(archive):
                           icao=row['ICAO IDENTIFIER'],
                           start_date=start_date,
                           end_date=end_date,
+                          type=row['LANDING FACILITY TYPE'],
                           status=status,
                           source='nfdc'
                           )
@@ -593,6 +634,9 @@ if __name__ == '__main__':
     assert(lat_dms == ['N', 22.0, 7.0, 30.0])
     assert(lon_dms == ['W', 22.0, 7.0, 30.0])
 
+    aa_airports = get_abandoned_airports_df(r'abandoned\abandoned_airports.csv')
+    aa_airports =  get_abandoned_airports_list(r'abandoned\abandoned_airports.csv')
+    oa_airports = get_ourairports_airports_list(r'ourairports\airports.csv')
     usgs_airports = get_usgs_airport_list(r'usgs\usgs_tran_national_AirportPoint.csv')
     usgs_airport_df = airports_to_df(usgs_airports)
     bts_airports = get_bts_airport_list(r'bts\787626600_T_MASTER_CORD.zip')
