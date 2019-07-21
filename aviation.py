@@ -11,10 +11,17 @@ import datetime
 import nltk
 import numpy as np
 import os
+from fuzzywuzzy import fuzz
+from fuzzywuzzy import process
 
 INSPECTION_THRESHOLD = 365*5 # days, inspections before this age probably indicate a closed/outdated airport
 
 class Airport:
+    def __repr__ (self):
+        return ('{},{},{},{},{},{},{},{},{},{},{}'.format(self.id,self.iata,self.icao,self.name,
+                                                          self.lat,self.lon,self.lat_dms,self.lon_dms,
+                                                          self.type,self.status,self.source))
+
     def __init__(self,
                  id='',
                  name='',
@@ -33,11 +40,12 @@ class Airport:
                  type='',
                  status='',
                  source='',
+                 source_id='',
                  link=''):
         self.id = id
         self.name = name.upper()
-        self.lat = lat
-        self.lon = lon
+        self.lat = round(lat,7)
+        self.lon = round(lon,7)
         if (lat or lon) and not lat_dms:
             lat_dms, lon_dms = ll_decimal_to_dms(lat,lon)
         if (lat_dms and lon_dms) and not lat_dms_string:
@@ -55,6 +63,7 @@ class Airport:
         self.type = type
         self.status = status
         self.source = source
+        self.source_id = source_id
         self.link = link
 
 def get_dms(decimal_degrees):
@@ -138,12 +147,18 @@ def haversine_np(lon1, lat1, lon2, lat2):
     return km
 
 def airports_to_df(airports):
-    header = ['id','name','lat','lon','lat_dms_string','lon_dms_string','lat_hemisphere','lat_deg','lat_min','lat_sec','lon_hemisphere','lon_deg','lon_min','lon_sec','city','state','icao','start_date','end_date','status','source']
-    data = [[a.id, a.name, a.lat, a.lon,
+    header = ['id','icao','iata','name','type','lat','lon',
+              'lat_dms_string','lon_dms_string',
+              'lat_hemisphere','lat_deg','lat_min','lat_sec',
+              'lon_hemisphere','lon_deg','lon_min','lon_sec',
+              'city','state','start_date','end_date','status',
+              'source','source_id','link']
+    data = [[a.id, a.icao, a.iata, a.name, a.type, a.lat, a.lon,
              a.lat_dms_string, a.lon_dms_string,
              a.lat_dms[0], int(a.lat_dms[1]), int(a.lat_dms[2]), int(a.lat_dms[3]),
              a.lon_dms[0], int(a.lon_dms[1]), int(a.lon_dms[2]), int(a.lon_dms[3]),
-             a.city, a.state, a.icao, a.start_date, a.end_date, a.status, a.source] for a in airports]
+             a.city, a.state, a.start_date, a.end_date, a.status,
+             a.source, a.source_id, a.link] for a in airports]
     airport_df = pd.DataFrame.from_records(data, columns=header)
     return airport_df
 
@@ -151,12 +166,28 @@ def airports_to_df(airports):
 def get_usgs_airport_list(flat_file):
     airport_df = get_usgs_airport_df(flat_file)
     airports = []
+    AIRPORT_CLASS = {4:'International Airport',
+                     5:'Military',
+                     2:'Municipal Airstrip / Airport',
+                     1:'Private Airstrip / Airport',
+                     3:'Regional Airport',
+                     99:'Unknown'}
+
+    FCODE = {20000: 'Airport Complex',
+             22700: 'Control Tower',
+             20100: 'Runway',
+             20101: 'Taxiway',
+             20102: 'Apron\Hardstand',
+             }
+
     for index, row in airport_df.iterrows():
         airport = Airport(id=row['FAA_AIRPOR'],
                           name=row['NAME'],
                           lat=row['Y'],
                           lon=row['X'],
-                          source='usgs'
+                          source='usgs',
+                          source_id=row['GLOBALID'],
+                          type=AIRPORT_CLASS.get(row['AIRPORT_CL'],'')
                           )
         airports.append(airport)
     return airports
@@ -219,7 +250,8 @@ def get_bts_airport_list(archive):
                           start_date=start_date,
                           end_date=end_date,
                           status=status,
-                          source='bts'
+                          source='bts',
+                          source_id=row['AIRPORT_ID']
                           )
         airports.append(airport)
     return airports
@@ -255,7 +287,8 @@ def get_bts_airport_df(archive):
                                    'LON_SECONDS',
                                    'AIRPORT_IS_CLOSED',
                                    'AIRPORT_START_DATE',
-                                   'AIRPORT_THRU_DATE'
+                                   'AIRPORT_THRU_DATE',
+                                   'AIRPORT_ID'
                                    ]]
         return us_airports
 
@@ -284,6 +317,7 @@ def get_ourairports_airports_list(flat_file):
                           status=status,
                           type=row['type'],
                           source='ourairports',
+                          source_id=row['id'],
                           link=row['link']
                           )
         airports.append(airport)
@@ -319,6 +353,7 @@ def get_osm_airports_list(flat_file):
                     'abandoned',
                     'disused',
                     'runway_disused'}
+
     for index, row in airport_df.iterrows():
         # if pd.isna(row['LAT_DEGREES']):
         #     print('Skipping unknown airport:')
@@ -331,13 +366,15 @@ def get_osm_airports_list(flat_file):
 
         airport = Airport(id=row['ref'],
                           name=row['name'],
+                          # state=row['postal'],
                           lat=row['Y'],
                           lon=row['X'],
                           iata=row['iata'],
                           icao=row['icao'],
                           status=status,
                           source='openstreetmaps',
-                          type=row['aeroway']
+                          type=row['aeroway'],
+                          source_id=row['NodeId']
                           )
         airports.append(airport)
     return airports
@@ -349,6 +386,11 @@ def get_osm_airports_df(flat_file):
 
     Source data:
     http://osm2shp.ru/
+
+    Annotated with state information using QGIS "Point sampling tool" plug-in
+    States source data:
+    https://www.naturalearthdata.com/downloads/10m-cultural-vectors/
+    "postal" field
 
     Data dictionary:
     https://wiki.openstreetmap.org/wiki/Tag:aeroway%3Daerodrome
@@ -493,7 +535,8 @@ def get_nfdc_airport_list(archive):
                           end_date=end_date,
                           type=row['LANDING FACILITY TYPE'],
                           status=status,
-                          source='nfdc'
+                          source='nfdc',
+                          source_id=row['LANDING FACILITY SITE NUMBER']
                           )
         airports.append(airport)
     return airports
@@ -739,10 +782,47 @@ def get_nfdc_airport_df(archive):
                        'RESPONSIBLE ARTCC IDENTIFIER',
                        'AIR TRAFFIC CONTROL TOWER LOCATED ON AIRPORT',
                        'LENS COLOR OF OPERABLE BEACON LOCATED ON THE AIRPORT',
-                       'ICAO IDENTIFIER'
+                       'ICAO IDENTIFIER',
+                       'LANDING FACILITY SITE NUMBER'
                        ]]
 
     return us_airports
+
+def get_best_match(test_airport, comparison_airports):
+    '''
+    Check for reasonable matches, return best match
+
+    :param test_airport:
+    :param comparison_airports:
+    :return:
+    '''
+    # print(len(comparison_airports))
+    local_comparison_airports = comparison_airports[(comparison_airports.lat > (test_airport.lat - 0.2)) &
+                                                    (comparison_airports.lat < (test_airport.lat + 0.2)) &
+                                                    (comparison_airports.lon > (test_airport.lon - 0.2)) &
+                                                    (comparison_airports.lon < (test_airport.lon + 0.2))]
+    # print(len(local_comparison_airports))
+    if local_comparison_airports.empty:
+        return
+
+    distance_results = haversine_np([test_airport.lon]*len(local_comparison_airports), [test_airport.lat]*len(local_comparison_airports), local_comparison_airports.lon, local_comparison_airports.lat)
+    closest = distance_results.min()
+    distance_max = 20 # km
+    distance_matches = local_comparison_airports[(distance_results == closest ) &
+                                                 (distance_results <= distance_max)]
+    if not distance_matches.empty:
+        if test_airport.name:
+            comparison_names = distance_matches.name.unique()
+            name_scores = process.extract(test_airport.name, comparison_names, limit=100, scorer=fuzz.token_sort_ratio)
+            for name, score in [m for m in name_scores if m[1] > 70]:
+                print(name,score)
+                name_matches = local_comparison_airports[(local_comparison_airports.name == name)]
+                return name_matches.head(1)
+    if closest < 1:
+        # Within 1km of an existing item, that's probably it regardless of the name
+        return local_comparison_airports[(distance_results == closest )]
+    return
+
 
 if __name__ == '__main__':
 
@@ -750,20 +830,57 @@ if __name__ == '__main__':
     assert(lat_dms == ['N', 22.0, 7.0, 30.0])
     assert(lon_dms == ['W', 22.0, 7.0, 30.0])
 
+    unmatched_closed_airports = []
+
     osm_airports = get_osm_airports_list(r'osm\osm_aeroway_pnt.csv')
     osm_airport_df = airports_to_df(osm_airports)
 
-    aa_airports =  get_abandoned_airports_list(r'abandoned\abandoned_airports.csv')
+    aa_airports = get_abandoned_airports_list(r'abandoned\abandoned_airports.csv')
     aa_airport_df = airports_to_df(aa_airports)
+
+    for test_airport in [a for a in osm_airports if a.status == 'C']:
+        matched_airport = get_best_match(test_airport, aa_airport_df)
+        if not isinstance(matched_airport, pd.DataFrame):
+            print('Unmatched: {}'.format(test_airport))
+            unmatched_closed_airports.append(test_airport)
 
     oa_airports = get_ourairports_airports_list(r'ourairports\airports.csv')
     oa_airport_df = airports_to_df(oa_airports)
 
+    for test_airport in [a for a in oa_airports if a.status == 'C']:
+        matched_airport = get_best_match(test_airport, aa_airport_df)
+        if not isinstance(matched_airport, pd.DataFrame):
+            print('Unmatched: {}'.format(test_airport))
+            unmatched_closed_airports.append(test_airport)
+
     usgs_airports = get_usgs_airport_list(r'usgs\usgs_tran_national_AirportPoint.csv')
     usgs_airport_df = airports_to_df(usgs_airports)
+    # No status in usgs data
 
     bts_airports = get_bts_airport_list(r'bts\787626600_T_MASTER_CORD.zip')
     bts_airport_df = airports_to_df(bts_airports)
 
+    for test_airport in [a for a in bts_airports if a.status == 'C']:
+        matched_airport = get_best_match(test_airport, aa_airport_df)
+        if not isinstance(matched_airport, pd.DataFrame):
+            print('Unmatched: {}'.format(test_airport))
+            unmatched_closed_airports.append(test_airport)
+
     nfdc_airports = get_nfdc_airport_list(r'nfdc\APT.zip')
     nfdc_airport_df = airports_to_df(nfdc_airports)
+
+
+    for test_airport in [a for a in nfdc_airports if a.status == 'CP']:
+        matched_airport = get_best_match(test_airport, aa_airport_df)
+        if not isinstance(matched_airport, pd.DataFrame):
+            print('Unmatched: {}'.format(test_airport))
+            unmatched_closed_airports.append(test_airport)
+
+    unmatched_closed_airports_df = airports_to_df(unmatched_closed_airports)
+    # Filter out helipads/heliports, too many to sift through
+    unmatched_closed_airports_noheli_df = unmatched_closed_airports_df[~unmatched_closed_airports_df['name'].str.contains('HELI')]
+    unmatched_closed_airports_noheli_df.to_csv('unmatched_closed_airports.csv')
+
+    # Load runways
+    # Find runways that match these airports
+    # write to kml airport locations and runways
