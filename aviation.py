@@ -302,11 +302,92 @@ def get_ourairports_airports_df(flat_file):
         file_contents = StringIO(csvfile.read().decode('utf-8'))
         df = pd.read_csv(file_contents)
         us_airports = df.loc[(df.iso_country == 'US')]
+        # us_airports.fillna('')
         us_airports[['iata_code','local_code','municipality']] = us_airports[['iata_code','local_code','municipality']].fillna('')
         merged_links = us_airports.wikipedia_link.fillna(us_airports.home_link).fillna('')
         us_airports['link'] = merged_links
         return us_airports
 
+
+def get_osm_airports_list(flat_file):
+    airport_df = get_osm_airports_df(flat_file)
+    airports = []
+    CLOSED_TYPES = {'aerodrome (historical)',
+                    'closed_aerodrome',
+                    'aerodrome_closed',
+                    'obsolete',
+                    'abandoned',
+                    'disused',
+                    'runway_disused'}
+    for index, row in airport_df.iterrows():
+        # if pd.isna(row['LAT_DEGREES']):
+        #     print('Skipping unknown airport:')
+        #     print(row)
+        #     continue
+        if row['aeroway'] in CLOSED_TYPES:
+            status = 'C'
+        else:
+            status = 'O'
+
+        airport = Airport(id=row['ref'],
+                          name=row['name'],
+                          lat=row['Y'],
+                          lon=row['X'],
+                          iata=row['iata'],
+                          icao=row['icao'],
+                          status=status,
+                          source='openstreetmaps',
+                          type=row['aeroway']
+                          )
+        airports.append(airport)
+    return airports
+
+def get_osm_airports_df(flat_file):
+    '''
+
+    OSM data must be prepared by opening the shapefile in QGIS and export as a csv with GEOMETRY=AS_XY
+
+    Source data:
+    http://osm2shp.ru/
+
+    Data dictionary:
+    https://wiki.openstreetmap.org/wiki/Tag:aeroway%3Daerodrome
+
+    More Aeroway information:
+    https://wiki.openstreetmap.org/wiki/Aeroways
+    '''
+    #Some facilities are aeroway types but are not really relevant as "airports"
+    NON_FACILITY = {'maintenance',
+                    'checkin',
+                    'terminal',
+                    'gate',
+                    'parking_position',
+                    'holding_position',
+                    'taxiway',
+                    'ILS',
+                    'navigation_aid',
+                    'navigationalaid',
+                    'navigationaid',
+                    'windsock',
+                    'papi',
+                    'displaced_threshold',
+                    'threshold',
+                    'fbo'}
+    with open(flat_file, 'rb') as csvfile:
+        file_contents = StringIO(csvfile.read().decode('utf-8'))
+        df = pd.read_csv(file_contents)
+        df = df[~df['aeroway'].isin(NON_FACILITY)]
+        us_airports = df.loc[(df.iata.notna()) |
+                             (df.icao.notna()) |
+                             (df.ref.notna()) |
+                             (df.name.notna())]
+        print(us_airports.aeroway.unique())
+        # The ref seems to be used as a generic ID key. The OSM wiki says to use the "faa" field for FAA LOCID, but
+        # that is not present in the shapefiles download from http://osm2shp.ru/, so I'm not including it here
+        us_airports.ref.fillna(us_airports.icao, inplace=True)
+        us_airports.fillna('', inplace=True)
+
+    return us_airports
 
 def get_abandoned_airports_list(flat_file):
     airport_df = get_abandoned_airports_df(flat_file)
@@ -318,7 +399,6 @@ def get_abandoned_airports_list(flat_file):
         #     continue
 
         airport_parts = row['Airport'].split(',')
-        state = row['State']
         name = ','.join(airport_parts[:-2])
         city = airport_parts[-2]
         if len(airport_parts) < 3:
@@ -670,56 +750,20 @@ if __name__ == '__main__':
     assert(lat_dms == ['N', 22.0, 7.0, 30.0])
     assert(lon_dms == ['W', 22.0, 7.0, 30.0])
 
-    aa_airports = get_abandoned_airports_df(r'abandoned\abandoned_airports.csv')
+    osm_airports = get_osm_airports_list(r'osm\osm_aeroway_pnt.csv')
+    osm_airport_df = airports_to_df(osm_airports)
+
     aa_airports =  get_abandoned_airports_list(r'abandoned\abandoned_airports.csv')
+    aa_airport_df = airports_to_df(aa_airports)
+
     oa_airports = get_ourairports_airports_list(r'ourairports\airports.csv')
+    oa_airport_df = airports_to_df(oa_airports)
+
     usgs_airports = get_usgs_airport_list(r'usgs\usgs_tran_national_AirportPoint.csv')
     usgs_airport_df = airports_to_df(usgs_airports)
+
     bts_airports = get_bts_airport_list(r'bts\787626600_T_MASTER_CORD.zip')
-    nfdc_airports = get_nfdc_airport_list(r'nfdc\APT.zip')
     bts_airport_df = airports_to_df(bts_airports)
+
+    nfdc_airports = get_nfdc_airport_list(r'nfdc\APT.zip')
     nfdc_airport_df = airports_to_df(nfdc_airports)
-    # for lexically similar airports, what's the physical distance?
-    # get suspicious pairs (similar airport name or id, relatively large distance (try: 10km, 50km, 100km)
-    # Prep: convert dms to string
-    # Check for:
-    # Transposed elements (minutes swapped with seconds)
-    # Transposed digits (first and second digit swapped within an element)
-    print('Checking matches...')
-    recorded_airport_count = 0
-    for airport in bts_airports:
-        state_airports = nfdc_airport_df[(nfdc_airport_df['state'] == airport.state)]
-        id_matches = state_airports[(state_airports['name'] == airport.name)]
-        match_count = len(id_matches)
-        if match_count == 1:
-            if ((airport.lat_dms_string[0:-1] != id_matches.lat_dms_string.item()[0:-1]) or
-                (airport.lon_dms_string[0:-1] != id_matches.lon_dms_string.item()[0:-1])):
-                distance = haversine_np(airport.lon, airport.lat, id_matches.lon.item(), id_matches.lat.item())
-                if distance > 5: # 0.1:
-                    recorded_airport_count = recorded_airport_count + 1
-                    print('Found match for {}: {}'.format(airport.name,id_matches.name.item()))
-                    print('\tlat\n\t{}:nfdc\n\t{}:bts'.format(airport.lat_dms_string, id_matches.lat_dms_string.item()))
-                    print('\tlon\n\t{}:nfdc\n\t{}:bts'.format(airport.lon_dms_string, id_matches.lon_dms_string.item()))
-                    print('\t{:2.2f} km apart'.format(distance))
-                    # a = sorted(airport.lat_dms_string[1:])
-                    print('\tnfdc: {}\n\tbts :{}'.format(airport.city, id_matches.city.item()))
-        elif match_count < 1:
-            continue
-            print('Match not found.')
-        elif match_count > 1:
-            print('Too many matches for {}.'.format(airport.name))
-            id_matches = state_airports[(state_airports['name'] == airport.name) &
-                                        (state_airports['city'] == airport.city)]
-            match_count = len(id_matches)
-            if match_count == 1:
-                recorded_airport_count = recorded_airport_count + 1
-                print('Found city match for {}: {}'.format(airport.name,id_matches.name.item()))
-                print('\tlat\n\t{}:nfdc\n\t{}:bts'.format(airport.lat_dms_string, id_matches.lat_dms_string.item()))
-                print('\tlon\n\t{}:nfdc\n\t{}:bts'.format(airport.lon_dms_string, id_matches.lon_dms_string.item()))
-                print('\t{:2.2f} km apart'.format(distance))
-                # a = sorted(airport.lat_dms_string[1:])
-                print('\tnfdc: {}\n\tbts :{}'.format(airport.city, id_matches.city.item()))
-
-
-    len(bts_airports)
-    print('{} matches found.'.format(recorded_airport_count))
